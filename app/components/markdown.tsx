@@ -19,9 +19,11 @@ import {
   HTMLPreview,
   HTMLPreviewHander,
 } from "./artifacts";
-import { Plugin } from "../constant";
 import { useChatStore } from "../store";
 import { IconButton } from "./button";
+
+import { useAppConfig } from "../store/config";
+import clsx from "clsx";
 
 export function Mermaid(props: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -56,7 +58,7 @@ export function Mermaid(props: { code: string }) {
 
   return (
     <div
-      className="no-dark mermaid"
+      className={clsx("no-dark", "mermaid")}
       style={{
         cursor: "pointer",
         overflow: "auto",
@@ -77,7 +79,6 @@ export function PreCode(props: { children: any }) {
   const { height } = useWindowSize();
   const chatStore = useChatStore();
   const session = chatStore.currentSession();
-  const plugins = session.mask?.plugin;
 
   const renderArtifacts = useDebouncedCallback(() => {
     if (!ref.current) return;
@@ -94,10 +95,9 @@ export function PreCode(props: { children: any }) {
     }
   }, 600);
 
-  const enableArtifacts = useMemo(
-    () => plugins?.includes(Plugin.Artifacts),
-    [plugins],
-  );
+  const config = useAppConfig();
+  const enableArtifacts =
+    session.mask?.enableArtifacts !== false && config.enableArtifacts;
 
   //Wrap the paragraph for plain-text
   useEffect(() => {
@@ -133,8 +133,9 @@ export function PreCode(props: { children: any }) {
           className="copy-code-button"
           onClick={() => {
             if (ref.current) {
-              const code = ref.current.innerText;
-              copyToClipboard(code);
+              copyToClipboard(
+                ref.current.querySelector("code")?.innerText ?? "",
+              );
             }
           }}
         ></span>
@@ -168,7 +169,13 @@ export function PreCode(props: { children: any }) {
   );
 }
 
-function CustomCode(props: { children: any }) {
+function CustomCode(props: { children: any; className?: string }) {
+  const chatStore = useChatStore();
+  const session = chatStore.currentSession();
+  const config = useAppConfig();
+  const enableCodeFold =
+    session.mask?.enableCodeFold !== false && config.enableCodeFold;
+
   const ref = useRef<HTMLPreElement>(null);
   const [collapsed, setCollapsed] = useState(true);
   const [showToggle, setShowToggle] = useState(false);
@@ -184,43 +191,37 @@ function CustomCode(props: { children: any }) {
   const toggleCollapsed = () => {
     setCollapsed((collapsed) => !collapsed);
   };
+  const renderShowMoreButton = () => {
+    if (showToggle && enableCodeFold && collapsed) {
+      return (
+        <div
+          className={clsx("show-hide-button", {
+            collapsed,
+            expanded: !collapsed,
+          })}
+        >
+          <button onClick={toggleCollapsed}>{Locale.NewChat.More}</button>
+        </div>
+      );
+    }
+    return null;
+  };
   return (
     <>
       <code
+        className={clsx(props?.className)}
         ref={ref}
         style={{
-          maxHeight: collapsed ? "400px" : "none",
+          maxHeight: enableCodeFold && collapsed ? "400px" : "none",
           overflowY: "hidden",
         }}
       >
         {props.children}
       </code>
-      {showToggle && collapsed && (
-        <div
-          className={`show-hide-button ${collapsed ? "collapsed" : "expanded"}`}
-        >
-          <button onClick={toggleCollapsed}>{Locale.NewChat.More}</button>
-        </div>
-      )}
+
+      {renderShowMoreButton()}
     </>
   );
-}
-
-function escapeDollarNumber(text: string) {
-  let escapedText = "";
-
-  for (let i = 0; i < text.length; i += 1) {
-    let char = text[i];
-    const nextChar = text[i + 1] || " ";
-
-    if (char === "$" && nextChar >= "0" && nextChar <= "9") {
-      char = "\\$";
-    }
-
-    escapedText += char;
-  }
-
-  return escapedText;
 }
 
 function escapeBrackets(text: string) {
@@ -241,9 +242,26 @@ function escapeBrackets(text: string) {
   );
 }
 
+function tryWrapHtmlCode(text: string) {
+  // try add wrap html code (fixed: html codeblock include 2 newline)
+  return text
+    .replace(
+      /([`]*?)(\w*?)([\n\r]*?)(<!DOCTYPE html>)/g,
+      (match, quoteStart, lang, newLine, doctype) => {
+        return !quoteStart ? "\n```html\n" + doctype : match;
+      },
+    )
+    .replace(
+      /(<\/body>)([\r\n\s]*?)(<\/html>)([\n\r]*)([`]*)([\n\r]*?)/g,
+      (match, bodyEnd, space, htmlEnd, newLine, quoteEnd) => {
+        return !quoteEnd ? bodyEnd + space + htmlEnd + "\n```\n" : match;
+      },
+    );
+}
+
 function _MarkDownContent(props: { content: string }) {
   const escapedContent = useMemo(() => {
-    return escapeBrackets(escapeDollarNumber(props.content));
+    return tryWrapHtmlCode(escapeBrackets(props.content));
   }, [props.content]);
 
   return (
@@ -265,6 +283,20 @@ function _MarkDownContent(props: { content: string }) {
         p: (pProps) => <p {...pProps} dir="auto" />,
         a: (aProps) => {
           const href = aProps.href || "";
+          if (/\.(aac|mp3|opus|wav)$/.test(href)) {
+            return (
+              <figure>
+                <audio controls src={href}></audio>
+              </figure>
+            );
+          }
+          if (/\.(3gp|3g2|webm|ogv|mpeg|mp4|avi)$/.test(href)) {
+            return (
+              <video controls width="99.9%">
+                <source src={href} />
+              </video>
+            );
+          }
           const isInternal = /^\/#/i.test(href);
           const target = isInternal ? "_self" : aProps.target ?? "_blank";
           return <a {...aProps} target={target} />;
